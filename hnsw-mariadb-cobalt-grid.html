@@ -1,0 +1,1112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MariaDB 12.3 HNSW 算法代码分析</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..500;1,6..72,400..500&family=Hanken+Grotesk:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;700;900&display=swap" rel="stylesheet">
+  <style>
+    /* === THEME TOKENS === */
+    :root {
+      --stage-bg: #d8d0bd;
+      --slide-bg: #F0EBDE;
+      --paper: #F0EBDE;
+      --paper-2: #E6E0CE;
+      --ink: #1F2BE0;
+      --ink-soft: #5560E5;
+      --grid: rgba(31, 43, 224, 0.10);
+      --ink-faint: rgba(31, 43, 224, 0.18);
+      --font-display: "Newsreader", "Noto Serif SC", Georgia, serif;
+      --font-body: "Hanken Grotesk", "Noto Serif SC", sans-serif;
+      --font-mono: "DM Mono", monospace;
+      --ease: cubic-bezier(.16, 1, .3, 1);
+    }
+
+    /* === RESET === */
+    * { box-sizing: border-box; }
+    h1, h2, h3, p, ul, ol, pre { margin: 0; }
+    body { color: var(--ink); font-family: var(--font-body); }
+
+    /* ===========================================
+       FIXED 16:9 STAGE: MANDATORY BASE STYLES
+       Include this ENTIRE file in every presentation.
+       Slides are authored at 1920×1080 and scaled as a whole.
+       =========================================== */
+
+    /* 1. Lock the browser viewport */
+    html,
+    body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: var(--stage-bg, #000);
+    }
+
+    /* 2. Full-window deck viewport */
+    .deck-viewport {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        background: var(--stage-bg, #000);
+    }
+
+    /* 3. Fixed 16:9 design canvas.
+       JavaScript sets transform: translate(...) scale(...). */
+    .deck-stage {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        transform-origin: 0 0;
+        background: var(--slide-bg, #fff);
+    }
+
+    /* 4. Slides stack inside the fixed stage.
+       Content must be laid out at 1920×1080, not reflowed per device. */
+    .slide {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        display: block;
+        visibility: hidden;
+        opacity: 0;
+        pointer-events: none;
+        background: var(--slide-bg, #fff);
+    }
+
+    .slide.active,
+    .slide.visible {
+        visibility: visible;
+        opacity: 1;
+        pointer-events: auto;
+        z-index: 1;
+    }
+
+    /* 5. Keep media inside authored slide bounds */
+    img,
+    video,
+    canvas,
+    svg {
+        max-width: 100%;
+        max-height: 100%;
+    }
+
+    /* 6. Presentation chrome stays outside the slide design system */
+    .deck-controls {
+        position: fixed;
+        left: 50%;
+        bottom: 22px;
+        transform: translateX(-50%);
+        z-index: 1000;
+    }
+
+    /* 7. Print one fixed-size slide per page */
+    @media print {
+        html,
+        body {
+            width: 1920px;
+            height: auto;
+            overflow: visible;
+            background: #fff;
+        }
+
+        .deck-viewport {
+            position: static;
+            overflow: visible;
+            background: #fff;
+        }
+
+        .deck-stage {
+            position: static;
+            width: auto;
+            height: auto;
+            transform: none !important;
+            background: none;
+        }
+
+        .slide {
+            position: relative;
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
+            width: 1920px;
+            height: 1080px;
+            break-after: page;
+            page-break-after: always;
+        }
+
+        .slide:last-child {
+            break-after: auto;
+            page-break-after: auto;
+        }
+
+        .deck-controls {
+            display: none !important;
+        }
+    }
+
+    /* 8. Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.2s !important;
+        }
+    }
+
+    /* === COBALT GRID CANVAS === */
+    .slide {
+      background:
+        linear-gradient(to right, var(--grid) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--grid) 1px, transparent 1px),
+        var(--paper);
+      background-size: 48px 48px;
+      color: var(--ink);
+      transition: opacity 280ms ease;
+    }
+    .slide::before,
+    .slide::after {
+      content: "";
+      position: absolute;
+      left: 70px;
+      right: 70px;
+      height: 2px;
+      background: var(--ink);
+      z-index: 3;
+    }
+    .slide::before { top: 70px; }
+    .slide::after { bottom: 70px; }
+    .page {
+      position: absolute;
+      right: 84px;
+      bottom: 96px;
+      z-index: 5;
+      font-family: var(--font-mono);
+      font-size: 20px;
+      letter-spacing: 0.06em;
+    }
+    .nav-hint {
+      position: absolute;
+      left: 84px;
+      bottom: 96px;
+      z-index: 5;
+      font-family: var(--font-mono);
+      font-size: 18px;
+      letter-spacing: 0.08em;
+      opacity: .4;
+    }
+
+    /* === TYPE SYSTEM === */
+    .kicker {
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 22px;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+    .mono {
+      font-family: var(--font-mono);
+      letter-spacing: 0.04em;
+    }
+    .serif {
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+    .title-xl {
+      font-family: var(--font-display);
+      font-weight: 400;
+      font-size: 134px;
+      line-height: 1.04;
+      letter-spacing: 0;
+    }
+    .title-lg {
+      font-family: var(--font-display);
+      font-weight: 400;
+      font-size: 90px;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    .lede {
+      font-size: 31px;
+      line-height: 1.55;
+      font-weight: 400;
+    }
+    .body {
+      font-size: 25px;
+      line-height: 1.55;
+      font-weight: 400;
+    }
+    .small {
+      font-size: 21px;
+      line-height: 1.5;
+    }
+    code, pre {
+      font-family: var(--font-mono);
+      color: var(--ink);
+      letter-spacing: 0;
+    }
+
+    /* === REVEAL MOTION === */
+    .reveal {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: opacity .62s var(--ease), transform .62s var(--ease);
+    }
+    .visible .reveal {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .reveal.d1 { transition-delay: .08s; }
+    .reveal.d2 { transition-delay: .16s; }
+    .reveal.d3 { transition-delay: .24s; }
+    .reveal.d4 { transition-delay: .32s; }
+    .reveal.d5 { transition-delay: .40s; }
+
+    /* === LAYOUT PRIMITIVES === */
+    .frame {
+      position: absolute;
+      inset: 124px 84px 150px;
+      z-index: 4;
+    }
+    .topbar {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 40px;
+      padding-bottom: 24px;
+      border-bottom: 2px solid var(--ink);
+      margin-bottom: 44px;
+    }
+    .topbar h2 {
+      font-family: var(--font-display);
+      font-size: 76px;
+      line-height: 1;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+    .topbar .tag {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 0.92fr 1.08fr;
+      gap: 60px;
+      height: 690px;
+    }
+    .two-col.compact {
+      height: auto;
+    }
+    .three-col {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 34px;
+    }
+    .row-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      border-top: 1px solid var(--ink-faint);
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 92px 0.95fr 1.55fr;
+      gap: 28px;
+      align-items: start;
+      padding: 24px 0;
+      border-bottom: 1px solid var(--ink-faint);
+    }
+    .row .num,
+    .mini-num {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      letter-spacing: 0.06em;
+    }
+    .row h3 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      font-size: 38px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    .row p {
+      font-size: 23px;
+      line-height: 1.48;
+    }
+    .note-box {
+      border-top: 2px solid var(--ink);
+      border-bottom: 1px solid var(--ink-faint);
+      padding: 28px 0;
+    }
+    .note-box h3 {
+      font-family: var(--font-display);
+      font-size: 46px;
+      line-height: 1.1;
+      font-weight: 400;
+      margin-bottom: 18px;
+    }
+    .note-box p,
+    .note-box li {
+      font-size: 23px;
+      line-height: 1.52;
+    }
+    .note-box ul { margin: 0; padding-left: 28px; }
+
+    /* === DECORATIVE GRAPHICS === */
+    .glitch {
+      position: absolute;
+      z-index: 2;
+      width: 330px;
+      height: 760px;
+      background:
+        linear-gradient(90deg, var(--ink) 0 12px, transparent 12px 24px),
+        linear-gradient(var(--ink) 0 14px, transparent 14px 28px);
+      background-size: 42px 30px;
+      clip-path: polygon(12% 0, 100% 0, 100% 16%, 82% 16%, 82% 34%, 64% 34%, 64% 52%, 46% 52%, 46% 72%, 28% 72%, 28% 100%, 0 100%, 0 10%, 12% 10%);
+      opacity: .92;
+      pointer-events: none;
+    }
+    .glitch.right { right: 88px; top: 170px; }
+    .glitch.left { left: 86px; top: 164px; transform: scaleX(-1); }
+    .qr {
+      position: absolute;
+      z-index: 5;
+      width: 100px;
+      height: 100px;
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      grid-template-rows: repeat(8, 1fr);
+      gap: 3px;
+      padding: 6px;
+      background: var(--paper);
+      box-shadow: 0 0 0 3px var(--paper);
+    }
+    .qr span { background: transparent; }
+    .qr span.on { background: var(--ink); }
+    .qr.tr { right: 410px; top: 820px; }
+    .vlabel {
+      position: absolute;
+      right: 46px;
+      top: 238px;
+      z-index: 5;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      font-family: var(--font-mono);
+      font-size: 20px;
+      letter-spacing: 0.05em;
+    }
+
+    /* === TITLE AND CHAPTER SLIDES === */
+    .cover-main {
+      position: absolute;
+      left: 124px;
+      top: 205px;
+      width: 1220px;
+      z-index: 5;
+    }
+    .cover-main .title-xl { max-width: 1120px; }
+    .cover-main .lede { width: 980px; margin-top: 42px; }
+    .cover-index {
+      position: absolute;
+      left: 124px;
+      bottom: 150px;
+      width: 1050px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--ink-faint);
+      z-index: 5;
+    }
+    .cover-index div {
+      min-height: 116px;
+      padding: 20px 24px 0 0;
+      border-right: 1px solid var(--ink-faint);
+      font-size: 22px;
+      line-height: 1.35;
+    }
+    .cover-index div:last-child { border-right: 0; }
+    .chapter {
+      position: absolute;
+      left: 180px;
+      top: 248px;
+      width: 1200px;
+      z-index: 5;
+    }
+    .chapter .kicker { margin-bottom: 42px; }
+    .chapter .title-xl { font-size: 126px; max-width: 1220px; }
+    .chapter .lede { max-width: 930px; margin-top: 44px; }
+
+    /* === CODE AND DIAGRAM BLOCKS === */
+    .code-panel {
+      border-top: 2px solid var(--ink);
+      padding-top: 24px;
+      font-family: var(--font-mono);
+      font-size: 21px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 18px;
+      align-items: stretch;
+      margin-top: 28px;
+    }
+    .flow .step {
+      min-height: 150px;
+      border-top: 2px solid var(--ink);
+      border-bottom: 1px solid var(--ink-faint);
+      padding: 20px 16px;
+      position: relative;
+    }
+    .flow .step::after {
+      content: ">";
+      position: absolute;
+      right: -16px;
+      top: 58px;
+      font-family: var(--font-mono);
+      font-size: 22px;
+    }
+    .flow .step:last-child::after { content: ""; }
+    .flow h3 {
+      font-family: var(--font-display);
+      font-size: 32px;
+      line-height: 1.1;
+      font-weight: 400;
+      margin-bottom: 12px;
+    }
+    .flow p { font-size: 19px; line-height: 1.4; }
+    .schema {
+      display: grid;
+      grid-template-columns: 300px 320px 250px 1fr;
+      border-top: 2px solid var(--ink);
+      font-size: 22px;
+    }
+    .schema div {
+      padding: 20px 18px;
+      border-bottom: 1px solid var(--ink-faint);
+    }
+    .schema .head {
+      font-family: var(--font-mono);
+      font-size: 18px;
+      letter-spacing: .04em;
+      border-bottom: 2px solid var(--ink);
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 30px;
+    }
+    .metric {
+      border-top: 2px solid var(--ink);
+      padding-top: 22px;
+      min-height: 194px;
+    }
+    .metric .big {
+      font-family: var(--font-display);
+      font-size: 64px;
+      line-height: .95;
+      font-weight: 400;
+      margin-bottom: 14px;
+    }
+    .metric p {
+      font-size: 22px;
+      line-height: 1.48;
+    }
+
+    /* === PIXEL STACK CHART === */
+    .bars {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 30px;
+      align-items: end;
+      height: 410px;
+      margin-top: 36px;
+      border-bottom: 2px solid var(--ink);
+      padding: 0 6px 20px;
+    }
+    .bar {
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 7px;
+      align-items: stretch;
+    }
+    .cell {
+      height: 22px;
+      background: var(--grid);
+    }
+    .cell.on { background: var(--ink); }
+    .axis {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 30px;
+      margin-top: 18px;
+      font-family: var(--font-mono);
+      font-size: 17px;
+      line-height: 1.3;
+      letter-spacing: 0.02em;
+    }
+
+    /* === EDITING UI === */
+    .edit-hotzone {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 84px;
+      height: 84px;
+      z-index: 10000;
+      cursor: pointer;
+    }
+    .edit-toggle,
+    .save-toggle {
+      position: fixed;
+      top: 18px;
+      z-index: 10001;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: 17px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease;
+    }
+    .edit-toggle { left: 18px; }
+    .save-toggle { left: 68px; }
+    .edit-toggle.show,
+    .edit-toggle.active,
+    .save-toggle.show,
+    .save-toggle.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    [contenteditable="true"] {
+      outline: 2px dotted var(--ink);
+      outline-offset: 4px;
+    }
+    .deck-progress {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%);
+      z-index: 1000;
+      color: var(--ink);
+      background: rgba(240,235,222,.92);
+      border: 1px solid var(--ink);
+      padding: 8px 14px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      letter-spacing: 0.05em;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* === REDUCED MOTION OVERRIDES === */
+    @media (prefers-reduced-motion: reduce) {
+      .reveal { opacity: 1 !important; transform: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="deck-viewport">
+    <main class="deck-stage" id="deckStage" aria-label="MariaDB 12.3 HNSW 算法代码分析">
+
+      <section class="slide active visible" data-title="title">
+        <div class="glitch right"></div>
+        <div class="qr tr" aria-hidden="true">
+          <span class="on"></span><span></span><span class="on"></span><span class="on"></span><span></span><span></span><span class="on"></span><span></span>
+          <span></span><span class="on"></span><span></span><span></span><span class="on"></span><span></span><span></span><span class="on"></span>
+          <span class="on"></span><span></span><span></span><span class="on"></span><span></span><span class="on"></span><span></span><span></span>
+          <span></span><span></span><span class="on"></span><span></span><span></span><span></span><span class="on"></span><span class="on"></span>
+          <span class="on"></span><span></span><span></span><span></span><span class="on"></span><span></span><span></span><span></span>
+          <span></span><span class="on"></span><span class="on"></span><span></span><span></span><span class="on"></span><span></span><span></span>
+          <span></span><span></span><span></span><span class="on"></span><span></span><span></span><span class="on"></span><span></span>
+          <span class="on"></span><span></span><span></span><span></span><span class="on"></span><span></span><span></span><span class="on"></span>
+        </div>
+        <div class="cover-main">
+          <p class="kicker reveal d1">source reading / vector index</p>
+          <h1 class="title-xl reveal d2" data-editable>MariaDB 12.3 HNSW 算法代码分析</h1>
+          <p class="lede reveal d3" data-editable>从 `VEC_DISTANCE` 到 `search_layer()`，把向量函数、索引创建、节点缓存和分层检索串成一条可验证的源码路径。</p>
+        </div>
+        <div class="cover-index reveal d4">
+          <div><span class="mono">01</span><br>函数与索引入口</div>
+          <div><span class="mono">02</span><br>MHNSW 图与搜索</div>
+          <div><span class="mono">03</span><br>DML 与事务性能</div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">001</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>阅读路径</h2><div class="tag">map / source to behavior</div></div>
+          <div class="row-list reveal d2">
+            <div class="row"><div class="num">01</div><h3>SQL 表面</h3><p>`VEC_DISTANCE_EUCLIDEAN`、`VEC_DISTANCE_COSINE`、`VEC_DISTANCE`、`VEC_FROMTEXT`、`VEC_TOTEXT` 决定向量如何进入 SQL 层。</p></div>
+            <div class="row"><div class="num">02</div><h3>索引对象</h3><p>`VECTOR KEY` 绑定 `mhnsw_plugin`，通过 `m` 和 `distance` 控制图的连边规模和距离度量。</p></div>
+            <div class="row"><div class="num">03</div><h3>图结构</h3><p>隐藏 high-level index table 持久化图节点，`MHNSW_Share` 在内存里缓存节点、量化向量和邻居列表。</p></div>
+            <div class="row"><div class="num">04</div><h3>执行路径</h3><p>优化器识别 `ORDER BY VEC_DISTANCE(...) LIMIT N` 后走 high-level index read，从最高层逐层下沉到第 0 层。</p></div>
+          </div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">002</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>SQL 向量函数</h2><div class="tag">item_create.cc / item_vectorfunc.cc</div></div>
+          <div class="two-col compact">
+            <div class="note-box reveal d2">
+              <h3>五个入口函数</h3>
+              <ul>
+                <li>`VEC_DISTANCE_EUCLIDEAN(a,b)`：逐维平方差求和再开方。</li>
+                <li>`VEC_DISTANCE_COSINE(a,b)`：`1 - dot/sqrt(abs1*abs2)`。</li>
+                <li>`VEC_DISTANCE(a,b)`：自动从字段上的 VECTOR index 推导距离类型。</li>
+                <li>`VEC_FROMTEXT(text)`：JSON 数组转内部二进制 float。</li>
+                <li>`VEC_TOTEXT(vector)`：内部二进制转文本数组。</li>
+              </ul>
+            </div>
+            <pre class="code-panel reveal d3">case AUTO:
+  for each Item_field arg:
+    scan vector keys
+    if key.algorithm == HA_KEY_ALG_VECTOR
+       && field participates:
+      kind = mhnsw_uses_distance(...)
+
+val_real():
+  reject NULL / length mismatch
+  reject length % sizeof(float)
+  return calc_distance(...)</pre>
+          </div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">003</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>VECTOR KEY 绑定 MHNSW</h2><div class="tag">sql_table.cc / vector_mhnsw.cc</div></div>
+          <div class="flow reveal d2">
+            <div class="step"><h3>DDL</h3><p>`Key::VECTOR` 进入 `mysql_prepare_create_table()`。</p></div>
+            <div class="step"><h3>Algorithm</h3><p>默认设置为 `HA_KEY_ALG_VECTOR`。</p></div>
+            <div class="step"><h3>Plugin</h3><p>绑定 `mhnsw_plugin` 和 `mhnsw_index_options`。</p></div>
+            <div class="step"><h3>Options</h3><p>`m` 控制邻居数量，`distance` 控制度量。</p></div>
+            <div class="step"><h3>HL Index</h3><p>创建隐藏辅助图表，保存 HNSW 结构。</p></div>
+          </div>
+          <div class="metric-grid reveal d3" style="margin-top:50px">
+            <div class="metric"><div class="big">M</div><p>默认 `mhnsw_default_m = 6`，越大召回越高，但 SELECT/INSERT 更慢、索引和内存更大。</p></div>
+            <div class="metric"><div class="big">ef</div><p>`mhnsw_ef_search` 控制查询候选下限，越大通常越准但越慢。</p></div>
+            <div class="metric"><div class="big">cache</div><p>`mhnsw_max_cache_size` 是单个 MHNSW vector index cache 的上限。</p></div>
+          </div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">004</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>图节点：FVectorNode</h2><div class="tag">one auxiliary row / one graph node</div></div>
+          <div class="three-col reveal d2">
+            <div class="note-box"><h3>身份</h3><p>`gref` 指向辅助图表记录，`tref` 指向主表记录。搜索命中图节点后，最终靠 `tref` 回主表随机读。</p></div>
+            <div class="note-box"><h3>向量</h3><p>`vec` 不是原始 float 数组，而是预处理后的 `FVector`，包含量化维度和距离计算所需派生值。</p></div>
+            <div class="note-box"><h3>邻居</h3><p>`neighbors` 按层保存邻居列表。第 0 层最多 `2*M`，其它层最多 `M`。</p></div>
+          </div>
+          <pre class="code-panel reveal d3" style="margin-top:44px">class FVectorNode {
+  const FVector *vec;
+  Neighborhood *neighbors;
+  uint8_t max_layer;
+  bool stored:1, deleted:1;
+  float distance_to(const FVector *other) const;
+  int load(TABLE *graph);
+  int save(TABLE *graph);
+};</pre>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">005</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>向量内部表示</h2><div class="tag">float array -> scale + int16 dims</div></div>
+          <div class="two-col compact">
+            <div class="note-box reveal d2">
+              <h3>量化路径</h3>
+              <p class="body">`FVector::create()` 先找最大绝对值，再计算 `scale`，把每维 float 映射到 `int16_t dims[]`。随后执行 `postprocess()` 生成 `abs2/subabs2`，cosine 距离还会做额外归一化。</p>
+            </div>
+            <div class="note-box reveal d3">
+              <h3>距离近似</h3>
+              <p class="body">距离计算通过 dot product 还原近似平方距离：`abs2 + other.abs2 - scale * other.scale * dot(dims, other.dims)`。这减少长期缓存里的向量体积，也让搜索里的距离比较更便宜。</p>
+            </div>
+          </div>
+          <div class="flow reveal d4">
+            <div class="step"><h3>scan max</h3><p>找到最大绝对值。</p></div>
+            <div class="step"><h3>scale</h3><p>计算 float 到 int16 的比例。</p></div>
+            <div class="step"><h3>dims</h3><p>逐维 round 到 int16。</p></div>
+            <div class="step"><h3>postprocess</h3><p>缓存 abs2 / subabs2。</p></div>
+            <div class="step"><h3>distance</h3><p>用 dot product 快速比较。</p></div>
+          </div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">006</div>
+      </section>
+
+      <section class="slide">
+        <div class="glitch right"></div>
+        <div class="chapter">
+          <p class="kicker reveal d1">insertion path</p>
+          <h2 class="title-xl reveal d2">插入不是追加一行，而是在图里找位置</h2>
+          <p class="lede reveal d3">非首个节点插入时，MariaDB 会从 start 节点逐层搜索候选、选择邻居、保存新节点，并回写邻居的反向连接。</p>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">007</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>插入建图流程</h2><div class="tag">mhnsw_insert()</div></div>
+          <div class="flow reveal d2">
+            <div class="step"><h3>first row</h3><p>图为空时，新节点直接作为 `ctx->start`。</p></div>
+            <div class="step"><h3>random layer</h3><p>按指数分布生成层数，最高不超过当前最高层 + 1。</p></div>
+            <div class="step"><h3>upper search</h3><p>高于目标层时，每层只保留 1 个最近入口。</p></div>
+            <div class="step"><h3>select neighbors</h3><p>目标层到第 0 层，搜索候选并选择邻居。</p></div>
+            <div class="step"><h3>back links</h3><p>保存新节点后更新二阶邻居反向连接。</p></div>
+          </div>
+          <pre class="code-panel reveal d3" style="margin-top:52px">target_layer = min(floor(-log(rand) / log(M)), max_layer + 1)
+
+for layer > target_layer:
+  search_layer(..., result_size = 1)
+
+for layer >= 0:
+  search_layer(..., result_size = max_neighbors(layer))
+  select_neighbors(...)
+
+target->save(graph)
+update_second_degree_neighbors(...)</pre>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">008</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>查询如何走 HNSW</h2><div class="tag">ORDER BY VEC_DISTANCE(...) LIMIT N</div></div>
+          <div class="two-col compact">
+            <div class="note-box reveal d2">
+              <h3>优化器匹配条件</h3>
+              <ul>
+                <li>`ORDER BY` 只有向量距离函数。</li>
+                <li>排序方向是升序。</li>
+                <li>参数中一个是字段，另一个是常量。</li>
+                <li>函数距离类型与 vector index 的 `distance` 一致。</li>
+              </ul>
+            </div>
+            <div class="note-box reveal d3">
+              <h3>执行入口</h3>
+              <p class="body">匹配后，`sql_select.cc` 把 read_record 函数切到 `join_hlindex_read_next`，然后调用 `hlindex_read_first()`，最终进入 `mhnsw_read_first()`。</p>
+            </div>
+          </div>
+          <div class="flow reveal d4">
+            <div class="step"><h3>highest</h3><p>从 `ctx->start` 最高层开始。</p></div>
+            <div class="step"><h3>layer down</h3><p>高层每层搜索 1 个入口。</p></div>
+            <div class="step"><h3>layer 0</h3><p>第 0 层搜索 LIMIT 个候选。</p></div>
+            <div class="step"><h3>context</h3><p>结果进入 `Search_context`。</p></div>
+            <div class="step"><h3>row fetch</h3><p>`mhnsw_read_next()` 用 `tref` 回主表。</p></div>
+          </div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">009</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>search_layer() 的两个队列</h2><div class="tag">candidate expansion / best set</div></div>
+          <div class="two-col compact">
+            <div class="note-box reveal d2">
+              <h3>candidates</h3>
+              <p class="body">待扩展节点队列。每次弹出当前候选，扫描它在当前 layer 的邻居，并把没有访问过的邻居按距离加入搜索过程。</p>
+            </div>
+            <div class="note-box reveal d3">
+              <h3>best</h3>
+              <p class="body">当前最近结果集合。`best` 已满且当前候选距离比最差 best 更远时，可以提前停止，因为后续候选不再可能改善结果。</p>
+            </div>
+          </div>
+          <pre class="code-panel reveal d4" style="margin-top:48px">ef = construction ? max(ef_construction, result_size)
+                  : max(mhnsw_ef_search, result_size)
+
+skip_deleted = !construction && layer == 0
+
+while candidates not empty:
+  cur = candidates.pop()
+  if cur.distance > furthest_best && best.is_full():
+    break
+  scan cur.node->neighbors[layer]
+  push better nodes into candidates and best</pre>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">010</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>隐藏辅助表</h2><div class="tag">HLINDEX_TEMPLATE "#i#%02u"</div></div>
+          <div class="schema reveal d2">
+            <div class="head">field</div><div class="head">type</div><div class="head">index</div><div class="head">purpose</div>
+            <div>layer</div><div>tinyint not null</div><div>key(layer)</div><div>节点最高层。打开图时用 `IDX_LAYER` 找最高层入口节点。</div>
+            <div>tref</div><div>varbinary(ref_length)</div><div>unique(tref)</div><div>主表 row ref。搜索命中后用它回主表读行，delete/update 也用它定位辅助表记录。</div>
+            <div>vec</div><div>blob not null</div><div>none</div><div>保存预处理后的向量数据，即 `scale + int16 dims[]`。</div>
+            <div>neighbors</div><div>blob not null</div><div>none</div><div>保存每层邻居的 graph ref 列表，格式为每层 `&lt;N&gt;&lt;gref&gt;...`。</div>
+          </div>
+          <p class="small reveal d3" style="margin-top:34px">目前 handler 创建 high-level index table 时断言只支持一个 vector high-level index。</p>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">011</div>
+      </section>
+
+      <section class="slide">
+        <div class="glitch right"></div>
+        <div class="chapter">
+          <p class="kicker reveal d1">DML and transaction cost</p>
+          <h2 class="title-xl reveal d2">事务应用的核心影响，不是距离计算本身</h2>
+          <p class="lede reveal d3">vector index 把一次主表 DML 扩展成「主表变更 + 隐藏辅助图表变更 + 内存图缓存维护」。写入放大、锁竞争和缓存失效才是 OLTP 风险点。</p>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">012</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>DML 写路径</h2><div class="tag">handler hooks / sql_base.cc</div></div>
+          <div class="row-list reveal d2">
+            <div class="row"><div class="num">insert</div><h3>同步维护图</h3><p>`hlindexes_on_insert()` 在主表插入后调用 `mhnsw_insert()`，新节点会触发图搜索、新节点保存和邻居更新。</p></div>
+            <div class="row"><div class="num">update</div><h3>逻辑删除 + 插入</h3><p>`hlindexes_on_update()` 先 `mhnsw_invalidate()` 旧节点，再 `mhnsw_insert()` 新节点，成本接近 delete + insert。</p></div>
+            <div class="row"><div class="num">delete</div><h3>tombstone</h3><p>删除不是物理移除节点，而是辅助表 `tref = NULL`，内存节点 `deleted = true`。第 0 层查询跳过，高层仍可导航。</p></div>
+            <div class="row"><div class="num">locks</div><h3>邻居热点</h3><p>多个事务插入相近向量时，可能争抢相同邻居节点的隐藏图表行，风险表现为 lock wait、deadlock 和 commit P99 上升。</p></div>
+          </div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">013</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>事务本地缓存与 COMMIT 抖动</h2><div class="tag">MHNSW_Trx / commit_lock / ctx_version</div></div>
+          <div class="three-col reveal d2">
+            <div class="note-box"><h3>MHNSW_Trx</h3><p>事务第一次需要 HNSW 上下文时创建，挂在 `thd->ha_data[]`，分配在 `thd->transaction->mem_root`。</p></div>
+            <div class="note-box"><h3>长事务</h3><p>批量写 vector 表时，节点、量化向量、邻居数组和搜索加载节点可能在事务期间保留，推高内存峰值。</p></div>
+            <div class="note-box"><h3>提交</h3><p>`do_commit()` 拿共享图 `commit_lock` 写锁，递增 `version`，失效共享缓存节点或 reset 整个缓存。</p></div>
+          </div>
+          <pre class="code-panel reveal d3" style="margin-top:46px">if (ctx->version != result->ctx_version) {
+  // shared ctx was modified
+  // switch to MHNSW_Trx and reload result nodes
+}</pre>
+          <p class="small reveal d4" style="margin-top:24px">读写混合场景中，查询可能在结果读取期间遇到版本变化，产生额外重加载成本。</p>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">014</div>
+      </section>
+
+      <section class="slide">
+        <div class="frame">
+          <div class="topbar reveal d1"><h2>压测指标优先级</h2><div class="tag">do not use plain sysbench only</div></div>
+          <div class="bars reveal d2">
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span></div>
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell"></span></div>
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span></div>
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span></div>
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell"></span></div>
+            <div class="bar"><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+          </div>
+          <div class="axis reveal d3">
+            <div>single insert<br>latency / redo</div><div>batch insert<br>memory / commit</div><div>update heavy<br>tombstone ratio</div><div>delete heavy<br>visited nodes</div><div>concurrent write<br>deadlock / retry</div><div>mixed RW<br>P99 jitter</div><div>M / ef_search<br>sensitivity</div><div>cache size<br>reset cost</div>
+          </div>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">015</div>
+      </section>
+
+      <section class="slide">
+        <div class="glitch left"></div>
+        <div class="chapter" style="left:560px;width:1180px;text-align:right">
+          <p class="kicker reveal d1">closing model</p>
+          <h2 class="title-xl reveal d2">主表之外，还有一张会呼吸的图</h2>
+          <p class="lede reveal d3" style="margin-left:auto">MariaDB 12.3 的 HNSW vector index 是「主表 + 隐藏辅助图表 + 内存图缓存」的组合。读路径靠分层图导航，写路径同步维护图结构；性能评估必须把 DML、事务、缓存和 tombstone 一起纳入。</p>
+        </div>
+        <div class="nav-hint">arrow / space</div><div class="page">016</div>
+      </section>
+
+    </main>
+  </div>
+
+  <div class="edit-hotzone" aria-hidden="true"></div>
+  <button class="edit-toggle" id="editToggle" title="Edit mode (E)" aria-label="Edit mode">E</button>
+  <button class="save-toggle" id="saveToggle" title="Save edits (Ctrl+S)" aria-label="Save edits">S</button>
+  <div class="deck-progress" id="deckProgress">001 / 016</div>
+
+  <script>
+    /* === SLIDE PRESENTATION CONTROLLER === */
+    class SlidePresentation {
+      constructor() {
+        this.slides = Array.from(document.querySelectorAll('.slide'));
+        this.stage = document.getElementById('deckStage');
+        this.progress = document.getElementById('deckProgress');
+        this.currentSlide = 0;
+        this.touchStartX = 0;
+        this.touchStartY = 0;
+        this.lastWheel = 0;
+        this.setupStageScale();
+        this.setupKeyboardNav();
+        this.setupTouchNav();
+        this.setupWheelNav();
+        this.showSlide(this.initialSlideIndex());
+      }
+
+      initialSlideIndex() {
+        const query = new URLSearchParams(window.location.search);
+        const fromQuery = Number.parseInt(query.get('slide') || '', 10);
+        const fromHash = Number.parseInt((window.location.hash.match(/slide-(\d+)/) || [])[1] || '', 10);
+        const requested = Number.isFinite(fromQuery) ? fromQuery : fromHash;
+        return Number.isFinite(requested) ? requested - 1 : 0;
+      }
+
+      setupStageScale() {
+        const scale = () => {
+          const factor = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+          const x = (window.innerWidth - 1920 * factor) / 2;
+          const y = (window.innerHeight - 1080 * factor) / 2;
+          this.stage.style.transform = `translate(${x}px, ${y}px) scale(${factor})`;
+        };
+        scale();
+        window.addEventListener('resize', scale, { passive: true });
+      }
+
+      setupKeyboardNav() {
+        document.addEventListener('keydown', (event) => {
+          if (event.target && event.target.getAttribute('contenteditable') === 'true') return;
+          if (['ArrowRight', 'ArrowDown', ' ', 'PageDown'].includes(event.key)) {
+            event.preventDefault();
+            this.next();
+          }
+          if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key)) {
+            event.preventDefault();
+            this.prev();
+          }
+          if (event.key === 'Home') this.showSlide(0);
+          if (event.key === 'End') this.showSlide(this.slides.length - 1);
+        });
+      }
+
+      setupTouchNav() {
+        document.addEventListener('touchstart', (event) => {
+          this.touchStartX = event.changedTouches[0].screenX;
+          this.touchStartY = event.changedTouches[0].screenY;
+        }, { passive: true });
+        document.addEventListener('touchend', (event) => {
+          const dx = event.changedTouches[0].screenX - this.touchStartX;
+          const dy = event.changedTouches[0].screenY - this.touchStartY;
+          if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) {
+            dx < 0 ? this.next() : this.prev();
+          }
+        }, { passive: true });
+      }
+
+      setupWheelNav() {
+        document.addEventListener('wheel', (event) => {
+          const now = Date.now();
+          if (now - this.lastWheel < 650 || Math.abs(event.deltaY) < 30) return;
+          this.lastWheel = now;
+          event.deltaY > 0 ? this.next() : this.prev();
+        }, { passive: true });
+      }
+
+      showSlide(index) {
+        this.currentSlide = Math.max(0, Math.min(index, this.slides.length - 1));
+        this.slides.forEach((slide, i) => {
+          slide.classList.toggle('active', i === this.currentSlide);
+          slide.classList.toggle('visible', i === this.currentSlide);
+        });
+        const current = String(this.currentSlide + 1).padStart(3, '0');
+        const total = String(this.slides.length).padStart(3, '0');
+        this.progress.textContent = `${current} / ${total}`;
+        location.hash = `slide-${this.currentSlide + 1}`;
+      }
+
+      next() { this.showSlide(this.currentSlide + 1); }
+      prev() { this.showSlide(this.currentSlide - 1); }
+    }
+
+    /* === INLINE EDITOR === */
+    class InlineEditor {
+      constructor() {
+        this.isActive = false;
+        this.key = 'hnsw-mariadb-cobalt-grid-edits';
+        this.editables = Array.from(document.querySelectorAll('[data-editable], h1, h2, h3, p, li'));
+        this.restore();
+      }
+
+      toggleEditMode() {
+        this.isActive = !this.isActive;
+        document.getElementById('editToggle').classList.toggle('active', this.isActive);
+        document.getElementById('saveToggle').classList.toggle('active', this.isActive);
+        this.editables.forEach((element) => {
+          element.setAttribute('contenteditable', this.isActive ? 'true' : 'false');
+        });
+      }
+
+      save() {
+        const data = this.editables.map((element) => element.innerHTML);
+        localStorage.setItem(this.key, JSON.stringify(data));
+      }
+
+      restore() {
+        const raw = localStorage.getItem(this.key);
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          this.editables.forEach((element, index) => {
+            if (typeof data[index] === 'string') element.innerHTML = data[index];
+          });
+        } catch (_) {
+          localStorage.removeItem(this.key);
+        }
+      }
+    }
+
+    /* === BOOTSTRAP === */
+    const deck = new SlidePresentation();
+    const editor = new InlineEditor();
+    const hotzone = document.querySelector('.edit-hotzone');
+    const editToggle = document.getElementById('editToggle');
+    const saveToggle = document.getElementById('saveToggle');
+    let hideTimeout = null;
+
+    function showEditButtons() {
+      clearTimeout(hideTimeout);
+      editToggle.classList.add('show');
+      saveToggle.classList.add('show');
+    }
+    function hideEditButtons() {
+      hideTimeout = setTimeout(() => {
+        if (!editor.isActive) {
+          editToggle.classList.remove('show');
+          saveToggle.classList.remove('show');
+        }
+      }, 400);
+    }
+    hotzone.addEventListener('mouseenter', showEditButtons);
+    hotzone.addEventListener('mouseleave', hideEditButtons);
+    hotzone.addEventListener('click', () => editor.toggleEditMode());
+    editToggle.addEventListener('mouseenter', showEditButtons);
+    editToggle.addEventListener('mouseleave', hideEditButtons);
+    editToggle.addEventListener('click', () => editor.toggleEditMode());
+    saveToggle.addEventListener('mouseenter', showEditButtons);
+    saveToggle.addEventListener('mouseleave', hideEditButtons);
+    saveToggle.addEventListener('click', () => editor.save());
+    document.addEventListener('keydown', (event) => {
+      const editing = event.target && event.target.getAttribute('contenteditable') === 'true';
+      if ((event.key === 'e' || event.key === 'E') && !editing) editor.toggleEditMode();
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        editor.save();
+      }
+    });
+  </script>
+</body>
+</html>
