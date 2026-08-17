@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 工程演进:Prompt → Context → Harness → Loop → Graph Engineering</title>
+<style>
+  :root {
+    --c1: #2563eb; --c1-bg: #eff6ff; --c1-border: #93c5fd;
+    --c2: #059669; --c2-bg: #ecfdf5; --c2-border: #6ee7b7;
+    --c3: #d97706; --c3-bg: #fffbeb; --c3-border: #fcd34d;
+    --c4: #7c3aed; --c4-bg: #f5f3ff; --c4-border: #c4b5fd;
+    --c5: #be185d; --c5-bg: #fdf2f8; --c5-border: #f9a8d4;
+    --text: #1e293b;
+    --muted: #64748b;
+    --bg: #f8fafc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 36px 20px;
+  }
+  .container { max-width: 1600px; margin: 0 auto; }
+
+  header { text-align: center; margin-bottom: 14px; }
+  header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  header .subtitle { font-size: 14px; color: var(--muted); }
+
+  /* ===== 演进主线 ===== */
+  .timeline-hint {
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 28px;
+  }
+  .timeline-hint b { color: var(--text); }
+
+  .stages {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0;
+    margin-bottom: 40px;
+  }
+  @media (max-width: 1200px) {
+    .stages { grid-template-columns: 1fr; gap: 20px; }
+    .arrow { transform: rotate(90deg); margin: -6px auto !important; }
+  }
+
+  .stage-wrap { display: flex; align-items: stretch; }
+  .stage {
+    flex: 1;
+    background: #fff;
+    border-radius: 14px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 20px 16px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    border-top: 4px solid;
+  }
+  .stage.s1 { border-top-color: var(--c1); }
+  .stage.s2 { border-top-color: var(--c2); }
+  .stage.s3 { border-top-color: var(--c3); }
+  .stage.s4 { border-top-color: var(--c4); }
+  .stage.s5 { border-top-color: var(--c5); }
+
+  .arrow {
+    align-self: center;
+    font-size: 22px;
+    color: #94a3b8;
+    padding: 0 6px;
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  .stage-num {
+    position: absolute;
+    top: -14px;
+    left: 16px;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .s1 .stage-num { background: var(--c1); }
+  .s2 .stage-num { background: var(--c2); }
+  .s3 .stage-num { background: var(--c3); }
+  .s4 .stage-num { background: var(--c4); }
+  .s5 .stage-num { background: var(--c5); }
+
+  .stage h2 { font-size: 17px; font-weight: 700; margin: 8px 0 2px; }
+  .stage .en {
+    font-size: 12px;
+    font-weight: 600;
+    font-family: "SF Mono", Monaco, Consolas, monospace;
+    margin-bottom: 4px;
+  }
+  .s1 .en { color: var(--c1); }
+  .s2 .en { color: var(--c2); }
+  .s3 .en { color: var(--c3); }
+  .s4 .en { color: var(--c4); }
+  .s5 .en { color: var(--c5); }
+
+  .era {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  .focus {
+    font-size: 12px;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+  .focus b { display: block; font-size: 11px; letter-spacing: 1px; margin-bottom: 2px; }
+  .s1 .focus { background: var(--c1-bg); border: 1px solid var(--c1-border); }
+  .s1 .focus b { color: var(--c1); }
+  .s2 .focus { background: var(--c2-bg); border: 1px solid var(--c2-border); }
+  .s2 .focus b { color: var(--c2); }
+  .s3 .focus { background: var(--c3-bg); border: 1px solid var(--c3-border); }
+  .s3 .focus b { color: var(--c3); }
+  .s4 .focus { background: var(--c4-bg); border: 1px solid var(--c4-border); }
+  .s4 .focus b { color: var(--c4); }
+  .s5 .focus { background: var(--c5-bg); border: 1px solid var(--c5-border); }
+  .s5 .focus b { color: var(--c5); }
+
+  .idea {
+    font-size: 12.5px;
+    color: var(--text);
+    margin-bottom: 10px;
+    font-style: italic;
+  }
+
+  .stage ul { list-style: none; margin-bottom: 12px; flex: 1; }
+  .stage ul li {
+    font-size: 12.5px;
+    padding: 3px 0 3px 16px;
+    position: relative;
+    color: #334155;
+  }
+  .stage ul li::before {
+    content: "▸";
+    position: absolute;
+    left: 0;
+    color: #94a3b8;
+  }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .tag {
+    font-size: 10.5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    color: #475569;
+    font-family: "SF Mono", Monaco, Consolas, monospace;
+  }
+
+  /* ===== 底部总结 ===== */
+  .summary {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 22px 28px;
+  }
+  .summary h3 {
+    font-size: 16px;
+    margin-bottom: 10px;
+    text-align: center;
+  }
+  .summary .flow {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .summary .flow .node {
+    padding: 5px 14px;
+    border-radius: 8px;
+    font-weight: 600;
+    color: #fff;
+    font-size: 12.5px;
+  }
+  .summary .flow .node:nth-child(1) { background: var(--c1); }
+  .summary .flow .node:nth-child(3) { background: var(--c2); }
+  .summary .flow .node:nth-child(5) { background: var(--c3); }
+  .summary .flow .node:nth-child(7) { background: var(--c4); }
+  .summary .flow .node:nth-child(9) { background: var(--c5); }
+  .summary .flow .sep { color: #94a3b8; font-size: 16px; }
+  .summary p {
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Agent 工程的五次范式演进</h1>
+    <div class="subtitle">Prompt Engineering → Context Engineering → Harness Engineering → Loop Engineering → Graph Engineering</div>
+  </header>
+
+  <div class="timeline-hint">
+    演进主线:工程化的优化对象不断放大 —— 从 <b>一段话</b> → <b>整个上下文</b> → <b>运行环境</b> → <b>迭代循环</b> → <b>系统拓扑</b>
+  </div>
+
+  <div class="stages">
+
+    <!-- 阶段 1 -->
+    <div class="stage-wrap">
+      <div class="stage s1">
+        <div class="stage-num">1</div>
+        <h2>提示词工程</h2>
+        <div class="en">Prompt Engineering</div>
+        <div class="era">约 2022–2023 · ChatGPT 时代</div>
+        <div class="focus"><b>优化对象</b>喂给模型的一段提示文本</div>
+        <div class="idea">"把话说对,模型就能做对。"</div>
+        <ul>
+          <li>零样本 / 少样本提示(Few-shot)</li>
+          <li>思维链 CoT、角色设定、指令模板</li>
+          <li>单轮或少量轮次交互,无外部工具</li>
+          <li>靠人工试错调措辞,带"玄学"色彩</li>
+          <li>效果脆弱:换模型、换措辞即失效</li>
+          <li>难以复用、难以系统化沉淀</li>
+        </ul>
+        <div class="tags">
+          <span class="tag">Few-shot</span>
+          <span class="tag">CoT</span>
+          <span class="tag">Role Play</span>
+          <span class="tag">Prompt 模板</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 阶段 2 -->
+    <div class="stage-wrap">
+      <div class="arrow">➜</div>
+      <div class="stage s2">
+        <div class="stage-num">2</div>
+        <h2>上下文工程</h2>
+        <div class="en">Context Engineering</div>
+        <div class="era">约 2023–2024 · RAG 与长上下文时代</div>
+        <div class="focus"><b>优化对象</b>整个上下文窗口的内容组装</div>
+        <div class="idea">"在对的时间,把对的信息放进上下文。"</div>
+        <ul>
+          <li>RAG 检索增强,动态注入外部知识</li>
+          <li>记忆管理:短期对话 + 长期记忆</li>
+          <li>上下文压缩、裁剪与优先级排序</li>
+          <li>工具返回结果的结构化注入</li>
+          <li>关注信息质量,而非措辞技巧</li>
+          <li>上下文成为稀缺资源,需要精打细算</li>
+        </ul>
+        <div class="tags">
+          <span class="tag">RAG</span>
+          <span class="tag">Memory</span>
+          <span class="tag">Compaction</span>
+          <span class="tag">Embedding 检索</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 阶段 3 -->
+    <div class="stage-wrap">
+      <div class="arrow">➜</div>
+      <div class="stage s3">
+        <div class="stage-num">3</div>
+        <h2>脚手架工程</h2>
+        <div class="en">Harness Engineering</div>
+        <div class="era">约 2024–2025 · Coding Agent 时代</div>
+        <div class="focus"><b>优化对象</b>模型之外的运行环境与工具链</div>
+        <div class="idea">"模型不变,更好的 harness 释放更强能力。"</div>
+        <ul>
+          <li>工具接口设计:读写文件、执行 shell</li>
+          <li>沙箱环境,安全地执行与试错</li>
+          <li>自动验证反馈:跑测试、lint、编译</li>
+          <li>子代理分工,隔离上下文、并行探索</li>
+          <li>权限与人机协作机制内建于环境</li>
+          <li>同一模型换 harness,表现天差地别</li>
+        </ul>
+        <div class="tags">
+          <span class="tag">Claude Code</span>
+          <span class="tag">Codex</span>
+          <span class="tag">Sandbox</span>
+          <span class="tag">Tool Use</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 阶段 4 -->
+    <div class="stage-wrap">
+      <div class="arrow">➜</div>
+      <div class="stage s4">
+        <div class="stage-num">4</div>
+        <h2>循环工程</h2>
+        <div class="en">Loop Engineering</div>
+        <div class="era">Agentic 工作流时代</div>
+        <div class="focus"><b>优化对象</b>Agent 的迭代控制循环本身</div>
+        <div class="idea">"智能来自循环的质量:感知-规划-行动-反思。"</div>
+        <ul>
+          <li>ReAct / Plan-Act-Observe 循环结构</li>
+          <li>停止条件、步数与 token 预算控制</li>
+          <li>错误恢复:重试、回退、换策略</li>
+          <li>自我批评与反思(Self-Reflection)</li>
+          <li>长任务的进度追踪与状态持久化</li>
+          <li>循环节奏决定 agent 的可靠性与成本</li>
+        </ul>
+        <div class="tags">
+          <span class="tag">ReAct</span>
+          <span class="tag">Reflection</span>
+          <span class="tag">Budget 控制</span>
+          <span class="tag">Checkpoint</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 阶段 5 -->
+    <div class="stage-wrap">
+      <div class="arrow">➜</div>
+      <div class="stage s5">
+        <div class="stage-num">5</div>
+        <h2>图工程</h2>
+        <div class="en">Graph Engineering</div>
+        <div class="era">多智能体系统时代</div>
+        <div class="focus"><b>优化对象</b>多节点、多智能体的控制流拓扑</div>
+        <div class="idea">"把 agent 系统建模为状态图,而非一条单链循环。"</div>
+        <ul>
+          <li>状态图建模:节点 = 能力,边 = 流转</li>
+          <li>条件路由:按状态动态选择下一节点</li>
+          <li>并行分支与汇聚,扇出/扇入控制</li>
+          <li>多智能体编排与角色分工协作</li>
+          <li>人在回环节点(Human-in-the-loop)</li>
+          <li>工作流可持久化、可回放、可观测</li>
+        </ul>
+        <div class="tags">
+          <span class="tag">LangGraph</span>
+          <span class="tag">CrewAI</span>
+          <span class="tag">AutoGen</span>
+          <span class="tag">Multi-Agent</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 总结 -->
+  <div class="summary">
+    <h3>演进规律:优化对象不断升维,工程确定性不断增强</h3>
+    <div class="flow">
+      <span class="node">一段提示文本</span>
+      <span class="sep">→</span>
+      <span class="node">整个上下文窗口</span>
+      <span class="sep">→</span>
+      <span class="node">模型运行环境</span>
+      <span class="sep">→</span>
+      <span class="node">迭代控制循环</span>
+      <span class="sep">→</span>
+      <span class="node">系统拓扑结构</span>
+    </div>
+    <p>
+      从"调一句话"到"设计一个系统":提示词工程依赖玄学试错,上下文工程开始管理信息流,脚手架工程把环境本身变成可设计的对象,
+      循环工程让 agent 具备自我校正的迭代能力,图工程则把多个 agent 协作编排为显式、可控、可观测的状态机。
+      五个阶段并非相互替代,而是层层叠加 —— 一个成熟的 Agent 系统同时需要这五个层面的工程能力。
+    </p>
+  </div>
+
+</div>
+</body>
+</html>
