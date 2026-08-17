@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Planner–Generator–Evaluator 三智能体架构 - Anthropic 长时运行应用 Harness 设计</title>
+<style>
+  :root {
+    --planner: #2563eb; --planner-bg: #eff6ff; --planner-border: #93c5fd;
+    --generator: #059669; --generator-bg: #ecfdf5; --generator-border: #6ee7b7;
+    --evaluator: #d97706; --evaluator-bg: #fffbeb; --evaluator-border: #fcd34d;
+    --loop: #7c3aed; --loop-bg: #f5f3ff; --loop-border: #c4b5fd;
+    --text: #1e293b;
+    --muted: #64748b;
+    --bg: #f8fafc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 36px 20px;
+  }
+  .container { max-width: 1240px; margin: 0 auto; }
+
+  header { text-align: center; margin-bottom: 32px; }
+  header h1 { font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+  header .subtitle { font-size: 14px; color: var(--muted); }
+  header .source {
+    font-size: 12px; color: var(--muted); margin-top: 6px;
+  }
+  header .source a { color: var(--planner); text-decoration: none; }
+
+  .section-title {
+    font-size: 16px; font-weight: 700; margin: 34px 0 16px;
+    padding-left: 12px; border-left: 4px solid var(--loop);
+  }
+
+  /* ===== 主架构流程图 ===== */
+  .arch {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 34px 28px;
+  }
+
+  .flow-row {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    gap: 0;
+  }
+  @media (max-width: 960px) {
+    .flow-row { flex-direction: column; align-items: center; }
+    .h-arrow { transform: rotate(90deg); }
+  }
+
+  .node {
+    border-radius: 12px;
+    padding: 14px 18px;
+    text-align: center;
+    min-width: 150px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .node .label { font-size: 15px; font-weight: 700; }
+  .node .sub { font-size: 11.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+
+  .node.input-node { background: #f1f5f9; border: 1.5px solid #cbd5e1; }
+  .node.output-node { background: #f1f5f9; border: 1.5px solid #cbd5e1; }
+  .node.planner-node { background: var(--planner-bg); border: 1.5px solid var(--planner-border); }
+  .node.planner-node .label { color: var(--planner); }
+
+  .h-arrow {
+    align-self: center;
+    font-size: 22px;
+    color: #94a3b8;
+    padding: 0 10px;
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  /* Generator ⇄ Evaluator 迭代区 */
+  .loop-arena {
+    border: 2px dashed var(--loop-border);
+    background: var(--loop-bg);
+    border-radius: 16px;
+    padding: 18px 20px 14px;
+    position: relative;
+  }
+  .loop-arena .arena-title {
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--loop);
+    color: #fff;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 2px 14px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .ge-row { display: flex; gap: 14px; }
+  @media (max-width: 640px) { .ge-row { flex-direction: column; } }
+
+  .agent-card {
+    flex: 1;
+    background: #fff;
+    border-radius: 12px;
+    padding: 14px 16px;
+    text-align: left;
+  }
+  .agent-card.g { border: 1.5px solid var(--generator-border); }
+  .agent-card.e { border: 1.5px solid var(--evaluator-border); }
+  .agent-card .agent-name { font-size: 15px; font-weight: 700; }
+  .agent-card.g .agent-name { color: var(--generator); }
+  .agent-card.e .agent-name { color: var(--evaluator); }
+  .agent-card .agent-role { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .agent-card ul { list-style: none; }
+  .agent-card ul li {
+    font-size: 12px;
+    color: #334155;
+    padding: 2px 0 2px 14px;
+    position: relative;
+  }
+  .agent-card ul li::before { content: "▸"; position: absolute; left: 0; color: #94a3b8; }
+
+  /* 双向迭代箭头 */
+  .cycle {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 12px;
+  }
+  @media (max-width: 640px) { .cycle { flex-direction: column; } }
+  .cycle .leg {
+    flex: 1;
+    text-align: center;
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 7px 10px;
+    border-radius: 8px;
+    line-height: 1.5;
+  }
+  .cycle .leg small { display: block; font-weight: 400; color: var(--muted); font-size: 10.5px; }
+  .cycle .leg.fwd { background: var(--generator-bg); border: 1px solid var(--generator-border); color: var(--generator); }
+  .cycle .leg.bwd { background: var(--evaluator-bg); border: 1px solid var(--evaluator-border); color: var(--evaluator); }
+
+  .comm-note {
+    margin-top: 14px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .comm-note code {
+    background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 5px;
+    padding: 1px 7px; font-size: 11px;
+    font-family: "SF Mono", Monaco, Consolas, monospace;
+  }
+
+  /* ===== 三列职责卡片 ===== */
+  .cards3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 900px) { .cards3 { grid-template-columns: 1fr; } }
+  .role-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 20px;
+    border-top: 4px solid;
+  }
+  .role-card.p { border-top-color: var(--planner); }
+  .role-card.g { border-top-color: var(--generator); }
+  .role-card.e { border-top-color: var(--evaluator); }
+  .role-card h3 { font-size: 16px; margin-bottom: 2px; }
+  .role-card.p h3 { color: var(--planner); }
+  .role-card.g h3 { color: var(--generator); }
+  .role-card.e h3 { color: var(--evaluator); }
+  .role-card .en { font-size: 11.5px; color: var(--muted); font-family: "SF Mono", Monaco, Consolas, monospace; margin-bottom: 10px; }
+  .role-card .mission {
+    font-size: 12.5px; font-style: italic; margin-bottom: 10px;
+    padding: 8px 10px; border-radius: 8px;
+  }
+  .role-card.p .mission { background: var(--planner-bg); }
+  .role-card.g .mission { background: var(--generator-bg); }
+  .role-card.e .mission { background: var(--evaluator-bg); }
+  .role-card ul { list-style: none; }
+  .role-card ul li {
+    font-size: 12.5px; color: #334155;
+    padding: 3px 0 3px 16px; position: relative;
+  }
+  .role-card ul li::before { content: "▸"; position: absolute; left: 0; color: #94a3b8; }
+
+  /* ===== 设计要点 ===== */
+  .insights {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 22px 26px;
+  }
+  .insights ul { list-style: none; }
+  .insights li {
+    font-size: 13.5px;
+    padding: 8px 0 8px 26px;
+    position: relative;
+    border-bottom: 1px dashed #e2e8f0;
+  }
+  .insights li:last-child { border-bottom: none; }
+  .insights li::before {
+    content: "💡";
+    position: absolute;
+    left: 0;
+    font-size: 14px;
+  }
+  .insights li b { color: var(--loop); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Planner – Generator – Evaluator 三智能体架构</h1>
+    <div class="subtitle">受 GAN(生成对抗网络)启发的长时运行应用构建 Harness</div>
+    <div class="source">来源:<a href="https://www.anthropic.com/engineering/harness-design-long-running-apps">Anthropic Engineering — Harness design for long-running application development</a></div>
+  </header>
+
+  <!-- ===== 主架构图 ===== -->
+  <div class="section-title">整体架构:一句话需求 → 完整全栈应用</div>
+  <div class="arch">
+    <div class="flow-row">
+
+      <div class="node input-node">
+        <div class="label">用户输入</div>
+        <div class="sub">1–4 句自然语言描述<br>如「做一个 2D 复古游戏编辑器」</div>
+      </div>
+
+      <div class="h-arrow">➜</div>
+
+      <div class="node planner-node">
+        <div class="label">① Planner</div>
+        <div class="sub">规划者<br>把一句话扩展为完整产品 Spec</div>
+      </div>
+
+      <div class="h-arrow">➜</div>
+
+      <div class="loop-arena">
+        <div class="arena-title">GAN 式生成–评估迭代循环(可多轮)</div>
+        <div class="ge-row">
+          <div class="agent-card g">
+            <div class="agent-name">② Generator</div>
+            <div class="agent-role">生成者 · 写代码</div>
+            <ul>
+              <li>按 Sprint 逐特性实现</li>
+              <li>React + Vite + FastAPI + SQLite</li>
+              <li>每个 Sprint 结束先自评</li>
+              <li>Git 做版本控制</li>
+            </ul>
+          </div>
+          <div class="agent-card e">
+            <div class="agent-name">③ Evaluator</div>
+            <div class="agent-role">评估者 · QA 把关</div>
+            <ul>
+              <li>用 Playwright MCP 真实点击应用</li>
+              <li>像用户一样测 UI / API / 数据库</li>
+              <li>按评分标准逐项打分</li>
+              <li>任一维度低于硬阈值 → FAIL</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cycle">
+          <div class="leg fwd">➜ 交付构建成果 + Sprint Contract<small>写代码前双方先协商「完成标准」,迭代至达成一致</small></div>
+          <div class="leg bwd">⇠ FAIL 时返回详细反馈<small>具体到文件与代码行的 bug 报告,驱动下一轮修复</small></div>
+        </div>
+      </div>
+
+      <div class="h-arrow">➜</div>
+
+      <div class="node output-node">
+        <div class="label">完整应用</div>
+        <div class="sub">多小时自主构建<br>可运行的全栈产品</div>
+      </div>
+
+    </div>
+    <div class="comm-note">智能体之间通过 <code>文件</code> 通信:一个写文件,另一个读取并在文件内回复或回写新文件</div>
+  </div>
+
+  <!-- ===== 三个 Agent 详解 ===== -->
+  <div class="section-title">三个 Agent 各自的职责与设计意图</div>
+  <div class="cards3">
+
+    <div class="role-card p">
+      <h3>Planner 规划者</h3>
+      <div class="en">prompt → product spec</div>
+      <div class="mission">把 1–4 句话的需求,自动扩展为有野心的完整产品规格书</div>
+      <ul>
+        <li>解决旧 harness 需要人工提供详细 Spec 的问题</li>
+        <li>关注产品定位与高层技术设计,刻意不写细粒度实现 —— 避免 Spec 错误向下游级联</li>
+        <li>主动在产品中编织 AI 功能(如 AI 辅助生成精灵、关卡)</li>
+        <li>可读取前端设计 skill,为应用制定统一视觉语言</li>
+        <li>实例:一句话 → 16 个特性、10 个 Sprint 的 Spec</li>
+      </ul>
+    </div>
+
+    <div class="role-card g">
+      <h3>Generator 生成者</h3>
+      <div class="en">spec → working code</div>
+      <div class="mission">按 Sprint 一次实现一个特性,把 Spec 变成能跑的软件</div>
+      <ul>
+        <li>沿用「一次一个特性」的范围控制策略</li>
+        <li>Sprint 开始前与 Evaluator 协商 Sprint Contract,明确可验证的完成标准</li>
+        <li>Sprint 结束先自我评估,再交给 QA</li>
+        <li>收到 FAIL 反馈后针对性修复,进入下一轮迭代</li>
+        <li>可根据评分趋势决定:继续打磨当前方向,还是彻底换方案</li>
+      </ul>
+    </div>
+
+    <div class="role-card e">
+      <h3>Evaluator 评估者</h3>
+      <div class="en">running app → grade &amp; feedback</div>
+      <div class="mission">像真实用户一样操作运行中的应用,做严格、可执行的质检</div>
+      <ul>
+        <li>通过 Playwright MCP 点击真实页面,而非看静态截图</li>
+        <li>测试 UI 特性、API 端点、数据库状态</li>
+        <li>评分维度:产品深度、功能性、视觉设计、代码质量</li>
+        <li>每个维度设硬阈值,任一不达标即整个 Sprint FAIL</li>
+        <li>反馈具体到代码位置,如「fillRectangle 未在 mouseUp 触发」</li>
+        <li>需专门调校:LLM 天生宽容,要把 Evaluator 调成「怀疑论者」</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <!-- ===== 关键设计要点 ===== -->
+  <div class="section-title">为什么这样设计:来自文章的关键洞察</div>
+  <div class="insights">
+    <ul>
+      <li><b>生成与评判必须分离:</b>Agent 评价自己的作品时会「自信地夸奖平庸之作」;把干活的人和打分的人分开,再给 Evaluator 调成怀疑态度,比让 Generator 自我批评容易得多。</li>
+      <li><b>主观质量要变成可打分标准:</b>「这个设计好不好」无法稳定评分,「是否遵循我们的设计原则」可以。评分标准本身也会反向塑造 Generator 的输出风格。</li>
+      <li><b>迭代产生质变:</b>前端实验跑 5–15 轮迭代,评分逐轮上升;第 10 轮甚至出现「推翻重做」的创造性飞跃 —— 单次生成从未出现过这种作品。</li>
+      <li><b>Harness 的每个组件都是对「模型做不到什么」的假设:</b>模型变强后要重新审视。Opus 4.6 到来后作者移除了 Sprint 结构,Evaluator 也从逐 Sprint 评分简化为最终一次性 QA。</li>
+      <li><b>Evaluator 不是固定必需品:</b>当任务在当前模型的可靠能力边界之内,它是多余开销;只有任务处于能力边缘时,QA 才带来真实提升。</li>
+      <li><b>成本与收益并存:</b>复古游戏编辑器案例中,单 Agent 跑 20 分钟/$9,完整 Harness 跑 6 小时/$200 —— 贵 20 倍,但单 Agent 版本的核心功能(玩游戏)根本是坏的。</li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>
